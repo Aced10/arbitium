@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+ccxt
+python-dotenv
+python-telegram-bot
+motor
+tensorflow
+pandas
+scikit-learn
+apscheduler
