@@ -1,40 +1,54 @@
+import os
+import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.services.arbitrage_service import calculate_opportunities
-from app.services.persistence_service import save_trade
-from app.core.notifications import send_telegram_message
 from app.services.execute_service import execute_trade_logic
-from app.core.config import MIN_PROFIT
 
 # Umbral de probabilidad para ejecución automática
-AUTO_EXECUTE_THRESHOLD = 0.8
+AUTO_EXECUTE_THRESHOLD = float(os.getenv("AUTO_EXECUTE_THRESHOLD", "0.7"))
+# Proporción del capital a usar en cada trade (0.0 - 1.0)
+EXECUTE_CAPITAL_RATIO = float(os.getenv("EXECUTE_CAPITAL_RATIO", "0.5"))
 
 scheduler = AsyncIOScheduler()
 
 async def periodic_task():
-    # Recolecta oportunidades y almacena en DB
-    ops = await calculate_opportunities()
-    # Para cada oportunidad con alta probabilidad, ejecuta el trade
-    print(f"Found {len(ops)} opportunities")
+    """
+    Tarea periódica que calcula oportunidades y ejecuta trades con alta probabilidad.
+    """
+    try:
+        ops = await calculate_opportunities()
+        logging.info(f"Found {len(ops)} opportunities")
+    except Exception as exc:
+        logging.error(f"Error calculating opportunities: {exc}")
+        return
+
     for op in ops:
-        if op['success_prob'] >= AUTO_EXECUTE_THRESHOLD:
-            trade = await execute_trade_logic(
-                symbol=op['symbol'],
-                buy_exchange=op['buy_exchange'],
-                sell_exchange=op['sell_exchange'],
-                amount=op['calculate_amount'](op['buy_price'])  # función que convierte monto
-            )
-            # Guarda trade en DB
-            await save_trade(trade)
-            # Envía alerta
-            msg = (
-                f"🤖 AutoTrade: {trade['symbol']} | "
-                f"Buy @{trade['buy_order']['price']} ({trade['buy_exchange']}) | "
-                f"Sell @{trade['sell_order']['price']} ({trade['sell_exchange']}) | "
-                f"Profit: {round(trade['profit_percent'],3)}%"
-            )
-            await send_telegram_message(msg)
+        if op.get('success_prob', 0) >= AUTO_EXECUTE_THRESHOLD:
+            # Calcular monto a operar (por ejemplo: ratio * buy_price)
+            amount = op['buy_price'] * EXECUTE_CAPITAL_RATIO
+            try:
+                trade = await execute_trade_logic(
+                    symbol=op['symbol'],
+                    buy_exchange=op['buy_exchange'],
+                    sell_exchange=op['sell_exchange'],
+                    amount=amount,
+                )
+                logging.info(f"Executed auto trade: {trade}")
+            except Exception as e:
+                logging.error(
+                    f"Auto trade error for {op['symbol']} on {op['buy_exchange']}->{op['sell_exchange']}: {e}"
+                )
+
 
 def start_scheduler():
-    # Ejecutar cada 10 segundos, usando la función async directamente
-    scheduler.add_job(periodic_task, 'interval', seconds=10)
+    """
+    Inicia el scheduler para ejecutar periodic_task cada X segundos.
+    """
+    interval_seconds = int(os.getenv("SCHEDULER_INTERVAL", "10"))
+    scheduler.add_job(
+        periodic_task,
+        'interval',
+        seconds=interval_seconds,
+        replace_existing=True
+    )
     scheduler.start()
